@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
-from .models import Club, ClubMembership, JoinCode, Event, Announcement, ActivityLog
+from .models import Club, ClubMembership, JoinCode, Event, Announcement, ActivityLog, Notification
 
 User=get_user_model()
 
@@ -71,6 +71,21 @@ class PlatformAPITests(TestCase):
         self.client.logout(); self.assertTrue(self.client.login(username="newstudent",password="StrongPass123!"))
         self.assertEqual(self.client.get("/api/auth/student/me/").status_code,200)
         self.assertEqual(self.client.get("/api/auth/admin/me/").status_code,403)
+    def test_admin_deletes_student_accounts_and_preserves_authored_content(self):
+        membership=ClubMembership.objects.create(club=self.club,user=self.student)
+        Notification.objects.create(user=self.student,club=self.club,kind="test",message="Test notice")
+        event=Event.objects.create(club=self.club,title="Student event",starts_at=timezone.now()+timedelta(days=1),created_by=self.student)
+        announcement=Announcement.objects.create(club=self.club,title="Student news",content="Notice",author=self.student)
+        self.login(self.admin,"StrongPass123!")
+        response=self.client.delete(f"/api/admin/users/{self.student.id}/")
+        self.assertEqual(response.status_code,204)
+        self.assertFalse(User.objects.filter(pk=self.student.id).exists())
+        self.assertFalse(ClubMembership.objects.filter(pk=membership.id).exists())
+        self.assertFalse(Notification.objects.filter(user_id=self.student.id).exists())
+        event.refresh_from_db(); announcement.refresh_from_db()
+        self.assertIsNone(event.created_by); self.assertIsNone(announcement.author)
+        self.assertTrue(ActivityLog.objects.filter(action="user.deleted",metadata__user_id=self.student.id).exists())
+        self.assertEqual(self.client.delete(f"/api/admin/users/{self.admin.id}/").status_code,404)
     def test_join_code_permissions_duplicate_expiry_revoke_and_usage(self):
         self.login(self.admin,"StrongPass123!")
         response=self.client.post("/api/join-codes/create/",{"club":self.club.id,"role_name":"President","permissions":["events.create"],"max_uses":1},format="json")

@@ -11,6 +11,7 @@ from django.utils.http import urlsafe_base64_decode
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.csrf import csrf_protect
 from rest_framework import viewsets, status, generics
+from rest_framework import mixins
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
@@ -332,12 +333,17 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     def read_all(self,request):
         self.get_queryset().filter(read_at__isnull=True).update(read_at=timezone.now()); return Response({"detail":"Notifications marked as read."})
 
-class AdminUserViewSet(viewsets.ReadOnlyModelViewSet):
+class AdminUserViewSet(mixins.ListModelMixin,mixins.RetrieveModelMixin,mixins.DestroyModelMixin,viewsets.GenericViewSet):
     serializer_class=UserSerializer; permission_classes=[IsAdminUser]
     def get_queryset(self):
         qs=User.objects.filter(is_staff=False,is_superuser=False).order_by("last_name","first_name","username")
         q=self.request.query_params.get("search")
         return qs.filter(Q(username__icontains=q)|Q(email__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q)) if q else qs
+    def perform_destroy(self, instance):
+        from django.db import transaction
+        with transaction.atomic():
+            log_activity(self.request.user,"user.deleted",f"Deleted student account {instance.username}",metadata={"user_id":instance.id})
+            instance.delete()
 
 class ActivityViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=ActivitySerializer; permission_classes=[IsAuthenticated]

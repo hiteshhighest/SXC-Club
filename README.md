@@ -85,7 +85,7 @@ All routes are under `/api/`. JSON errors use DRF validation responses. List rou
 | Announcements | `/clubs/{id}/announcements/` list/create/retrieve/update/delete; detail action `publish/` | Only published announcements appear publicly |
 | Notifications | `GET notifications/`, `POST notifications/{id}/read/`, `POST notifications/read_all/` | Own notifications only |
 | Permissions | `GET permissions/` | Public permission catalog; grants still require club authorization |
-| Administration | `GET admin/stats/`, `GET admin/users/`, `POST admin/users/create/`, `POST admin/accounts/`, `GET activity/` | Admin only; `admin/accounts/` creates a student and club membership in one transaction |
+| Administration | `GET admin/stats/`, `GET admin/users/`, `DELETE admin/users/{id}/`, `POST admin/users/create/`, `POST admin/accounts/`, `GET activity/` | Admin only; deleting a student removes memberships and notifications while preserving authored events and announcements |
 
 ### Permission keys
 
