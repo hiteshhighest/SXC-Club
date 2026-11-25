@@ -30,7 +30,6 @@ export function Login({onLogin,mode='student'}:{onLogin:(user:User)=>void;mode?:
       <Button type="submit" disabled={busy} className="w-full justify-center">{busy?'Please wait':reset?'Send reset link':'Sign in'} <ArrowRight size={17}/></Button>
     </form>
     <button className="text-link" onClick={()=>{setReset(!reset);setError('');setNotice('')}}>{reset?'Back to sign in':'Forgot password?'}</button>
-    <div className="login-switch">{admin?<><span>Are you a student?</span><a href="/">Student sign in</a></>:<><span>College administrator?</span><a href="/admin">Admin sign in</a></>}</div>
     <p className="login-foot">Accounts are created by SXC Clubs administrators.</p>
   </section></main>
 }
