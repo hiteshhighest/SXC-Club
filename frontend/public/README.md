@@ -1,1 +1,1 @@
-Place the college-provided logo here as `sxc-logo.png`. The interface will use it automatically; until then it shows a simple replaceable SXC Clubs mark.
+The college-provided logo is stored here as `sxc-logo.png` and loads automatically. If the logo changes, replace that file; the interface keeps a simple SXC Clubs mark as a fallback.
