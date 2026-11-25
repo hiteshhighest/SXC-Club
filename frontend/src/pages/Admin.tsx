@@ -2,24 +2,23 @@ import { useEffect, useState } from 'react'
 import { ArrowDownRight, ArrowUpRight, Building2, CalendarDays, Plus, UserPlus, UsersRound, Archive } from 'lucide-react'
 import { api, json, type Club } from '../lib/api'
 import { Badge, Button, Card, Input, PageTitle } from '../components/ui'
+import { PermissionPicker, type PermissionGroups } from '../components/PermissionPicker'
 
-type PermissionItem={key:string;label:string}
 type AccountForm={username:string;email:string;first_name:string;last_name:string;password:string;club:string;role_name:string}
-const groups=[['events','Events'],['announcements','Announcements'],['membership','Membership'],['club','Club tools']] as const
 const icons=[Building2,UsersRound,UsersRound,CalendarDays]
 const labels=['Active clubs','Students','Memberships','Upcoming events']
 const blankAccount:AccountForm={username:'',email:'',first_name:'',last_name:'',password:'',club:'',role_name:'Member'}
 
 export function Admin({onNavigate}:{onNavigate:(p:string)=>void}){
   const [stats,setStats]=useState<any>(null);const [clubs,setClubs]=useState<Club[]>([]);const [students,setStudents]=useState<any[]>([])
-  const [catalog,setCatalog]=useState<Record<string,PermissionItem[]>>({});const [showClub,setShowClub]=useState(false);const [showAccount,setShowAccount]=useState(false)
+  const [catalog,setCatalog]=useState<PermissionGroups>({});const [showClub,setShowClub]=useState(false);const [showAccount,setShowAccount]=useState(false)
   const [clubForm,setClubForm]=useState({name:'',abbreviation:'',category:'',description:''});const [account,setAccount]=useState<AccountForm>(blankAccount)
   const [permissions,setPermissions]=useState<string[]>([]);const [error,setError]=useState('');const [notice,setNotice]=useState('')
   function refresh(){
     api<any>('/admin/stats/').then(setStats).catch(e=>setError(e.message))
     api<any>('/clubs/').then(r=>{const list=Array.isArray(r)?r:r.results;setClubs(list);if(list[0])setAccount(a=>({...a,club:a.club||String(list[0].id)}))}).catch(()=>{})
     api<any>('/admin/users/').then(r=>setStudents(r.results??r)).catch(()=>{})
-    api<Record<string,PermissionItem[]>>('/permissions/').then(setCatalog).catch(()=>{})
+    api<PermissionGroups>('/permissions/').then(setCatalog).catch(()=>{})
   }
   useEffect(()=>{refresh()},[])
   async function createClub(e:React.FormEvent){e.preventDefault();setError('');setNotice('');try{await api('/clubs/',json('POST',clubForm));setShowClub(false);setClubForm({name:'',abbreviation:'',category:'',description:''});setNotice('Club created.');refresh()}catch(e){setError((e as Error).message)}}
@@ -36,7 +35,7 @@ export function Admin({onNavigate}:{onNavigate:(p:string)=>void}){
       <label>Username<Input required value={account.username} onChange={e=>setAccount({...account,username:e.target.value})}/></label><label>Email<Input required type="email" value={account.email} onChange={e=>setAccount({...account,email:e.target.value})}/></label>
       <label>Temporary password<Input required type="password" minLength={10} value={account.password} onChange={e=>setAccount({...account,password:e.target.value})}/></label><label>Club<select className="input" required value={account.club} onChange={e=>setAccount({...account,club:e.target.value})}>{clubs.filter(c=>c.status==='active').map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
       <label>Role name<Input required value={account.role_name} onChange={e=>setAccount({...account,role_name:e.target.value})} placeholder="Member"/></label>
-      <div className="account-permissions"><div><b>Permissions</b><span>Choose access independently from the role name.</span></div><div className="permission-groups">{groups.map(([key,label])=><div className="permission-group" key={key}><h4>{label}</h4><div className="permission-checks">{(catalog[key]??[]).map(p=><label key={p.key}><input type="checkbox" checked={permissions.includes(p.key)} onChange={e=>setPermissions(e.target.checked?[...permissions,p.key]:permissions.filter(x=>x!==p.key))}/><span>{p.label}</span></label>)}</div></div>)}</div></div>
+      <div className="account-permissions"><div><b>Permissions</b><span>Choose access independently from the role.</span></div><PermissionPicker groups={catalog} value={permissions} onChange={setPermissions}/></div>
       <div className="account-submit"><p className="muted">The initial password is set by the administrator. Students sign in separately.</p><Button type="submit"><UserPlus size={16}/> Create account</Button></div>
     </form></Card>}
     <div className="admin-grid"><section><div className="section-heading compact"><div><h2>Clubs</h2><p className="muted">Manage the campus directory</p></div><button className="inline-link" onClick={()=>onNavigate('join-codes')}>Join codes <ArrowUpRight size={15}/></button></div><Card className="admin-clubs">{clubs.map((club,i)=><div className="admin-club-row" key={club.id}><div className={`club-symbol symbol-${['violet','coral','mint','sun'][i%4]}`}>{club.abbreviation.slice(0,2)}</div><div className="admin-club-info"><b>{club.name}</b><span>{club.category||'Campus community'} · {club.member_count??0} members</span></div><Badge color={club.status==='active'?'mint':'sun'}>{club.status}</Badge><button className="row-action" onClick={()=>onNavigate(`club:${club.id}`)} title="View club"><ArrowUpRight size={17}/></button>{club.status==='active'&&<button className="row-action archive-action" onClick={()=>archiveClub(club)} title="Archive club"><Archive size={16}/></button>}</div>)}</Card></section>
