@@ -113,11 +113,19 @@ class ClubViewSet(viewsets.ModelViewSet):
         club=self.get_object()
         if not (self.request.user.is_staff or self.request.user.is_superuser or has_club_permission(self.request.user, club, "club.edit")): raise PermissionDenied()
         if "status" in serializer.validated_data and serializer.validated_data["status"] != club.status and not (self.request.user.is_staff or self.request.user.is_superuser): raise PermissionDenied("Only administrators can archive or reactivate a club.")
-        obj=serializer.save(); log_activity(self.request.user,"club.updated",f"Updated {obj.name}",obj)
+        previous_status=club.status
+        obj=serializer.save()
+        if previous_status!=obj.status:
+            action="club.archived" if obj.status=="archived" else "club.restored"
+            summary=f"Archived {obj.name}" if obj.status=="archived" else f"Restored {obj.name}"
+            log_activity(self.request.user,action,summary,obj)
+        else: log_activity(self.request.user,"club.updated",f"Updated {obj.name}",obj)
     def perform_destroy(self, instance):
         if not (self.request.user.is_staff or self.request.user.is_superuser): raise PermissionDenied()
-        instance.status = "archived"; instance.save(update_fields=["status", "updated_at"])
-        log_activity(self.request.user, "club.archived", f"Archived {instance.name}", instance)
+        from django.db import transaction
+        with transaction.atomic():
+            log_activity(self.request.user,"club.deleted",f"Permanently deleted {instance.name}",instance)
+            instance.delete()
     @action(detail=True, methods=["get"])
     def dashboard(self, request, pk=None):
         club = self.get_object(); active = club.memberships.filter(status="active")

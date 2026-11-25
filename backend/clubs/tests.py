@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
-from .models import Club, ClubMembership, JoinCode, Event, Announcement
+from .models import Club, ClubMembership, JoinCode, Event, Announcement, ActivityLog
 
 User=get_user_model()
 
@@ -22,9 +22,28 @@ class PlatformAPITests(TestCase):
         self.assertTrue(self.login(self.student,"StrongPass123!"))
         denied=self.client.post("/api/clubs/",{"name":"New","abbreviation":"NEW"},format="json")
         self.assertEqual(denied.status_code,403)
+        self.assertEqual(self.client.patch(f"/api/clubs/{self.club.id}/",{"status":"archived"},format="json").status_code,403)
+        self.assertEqual(self.client.delete(f"/api/clubs/{self.club.id}/").status_code,403)
         self.client.logout(); self.login(self.admin,"StrongPass123!")
         created=self.client.post("/api/clubs/",{"name":"Art Club","abbreviation":"ART"},format="json")
         self.assertEqual(created.status_code,201)
+    def test_admin_can_archive_restore_and_permanently_delete_club(self):
+        self.login(self.admin,"StrongPass123!")
+        archived=self.client.patch(f"/api/clubs/{self.club.id}/",{"status":"archived"},format="json")
+        self.assertEqual(archived.status_code,200); self.club.refresh_from_db(); self.assertEqual(self.club.status,"archived")
+        restored=self.client.patch(f"/api/clubs/{self.club.id}/",{"status":"active"},format="json")
+        self.assertEqual(restored.status_code,200); self.club.refresh_from_db(); self.assertEqual(self.club.status,"active")
+        ClubMembership.objects.create(club=self.club,user=self.student)
+        Event.objects.create(club=self.club,title="Club event",starts_at=timezone.now()+timedelta(days=1))
+        Announcement.objects.create(club=self.club,title="Club news",content="Notice")
+        JoinCode.objects.create(club=self.club,role_name="Member",code_hash=JoinCode.digest("delete-test"),code_hint="TEST")
+        deleted=self.client.delete(f"/api/clubs/{self.club.id}/")
+        self.assertEqual(deleted.status_code,204); self.assertFalse(Club.objects.filter(pk=self.club.id).exists())
+        self.assertTrue(ActivityLog.objects.filter(action="club.deleted",summary__contains="Robotics Club").exists())
+        self.assertFalse(ClubMembership.objects.filter(club_id=self.club.id).exists())
+        self.assertFalse(Event.objects.filter(club_id=self.club.id).exists())
+        self.assertFalse(Announcement.objects.filter(club_id=self.club.id).exists())
+        self.assertFalse(JoinCode.objects.filter(club_id=self.club.id).exists())
     def test_login_requires_csrf_and_works_with_token(self):
         self.client.get("/api/csrf/")
         blocked=self.client.post("/api/auth/login/",{"username":"student","password":"StrongPass123!"},format="json")

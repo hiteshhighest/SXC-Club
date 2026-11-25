@@ -78,7 +78,7 @@ All routes are under `/api/`. JSON errors use DRF validation responses. List rou
 | Password | `POST auth/password-reset/`, `POST auth/password-reset/confirm/` | Public, throttled; reset response is generic |
 | Dashboard | `GET dashboard/` | Signed-in user; own clubs only |
 | Clubs | `GET clubs/`, `GET clubs/{id}/`, `GET clubs/{id}/dashboard/` | Active club directory; private dashboard requires sign-in |
-| Club changes | `POST clubs/`, `PATCH clubs/{id}/`, `DELETE clubs/{id}/` | Admin create/archive; club permission for edits; only admins archive |
+| Club changes | `POST clubs/`, `PATCH clubs/{id}/`, `DELETE clubs/{id}/` | Admins create, archive, restore, or permanently delete clubs; club permission for other edits. Deletion removes memberships, events, announcements, join codes, and notifications |
 | Members | `GET clubs/{id}/members/`, `PATCH clubs/{id}/members/{membership}/role/`, `DELETE clubs/{id}/members/{membership}/remove/` | Membership permissions; supports `search`, `role`, and `page` filters |
 | Join codes | `POST join-codes/create/`, `GET join-codes/`, `POST join-codes/{id}/revoke/`, `POST join-codes/redeem/` | Club-specific permission or admin; redemption requires a signed-in account |
 | Events | `/clubs/{id}/events/` list/create/retrieve/update/delete; detail actions `publish/`, `unpublish/` | Published events are visible publicly; writes and non-published data require club permissions |
