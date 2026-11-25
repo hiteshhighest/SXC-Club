@@ -101,6 +101,15 @@ class Announcement(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta: ordering = ["-published_at", "-created_at"]
 
+class ClubMessage(models.Model):
+    club = models.ForeignKey(Club, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="club_messages")
+    content = models.CharField(max_length=2000)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["club", "id"])]
+
 class Notification(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
     club = models.ForeignKey(Club, on_delete=models.CASCADE, null=True, blank=True)

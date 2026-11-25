@@ -2,12 +2,16 @@ export type User = { id:number; username:string; first_name:string; last_name:st
 export type Club = { id:number; name:string; abbreviation:string; category:string; description:string; logo:string|null; banner:string|null; status:string; contact_email?:string; contact_url?:string; member_count?:number }
 export type Membership = { id?:number; club_id:number; club__name:string; club__abbreviation:string; role_name:string; permissions:string[] }
 export type Event = { id:number; club:number; club_name:string; title:string; description:string; starts_at:string; venue:string; status:string; category:string }
-export type Announcement = { id:number; club:number; club_name:string; title:string; content:string; status:string; published_at:string|null; author_name:string }
+export type Announcement = { id:number; club:number; club_name:string; title:string; content:string; attachment?:string|null; status:string; published_at:string|null; author_name:string }
 export type Notification = { id:number; kind:string; message:string; read_at:string|null; created_at:string }
-const base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api'
+const base = (import.meta.env.VITE_API_URL || 'http://localhost:8000/api').replace(/\/+$/, '')
 let csrf = ''
 function cookie(name:string) { return document.cookie.split('; ').find(row=>row.startsWith(name+'='))?.split('=')[1] ?? '' }
-export async function initCsrf() { await fetch(`${base}/csrf/`,{credentials:'include'}); csrf=decodeURIComponent(cookie('csrftoken')) }
+export async function initCsrf() {
+  const res=await fetch(`${base}/csrf/`,{credentials:'include'})
+  const data=await res.json().catch(()=>({}))
+  csrf=data.csrfToken||decodeURIComponent(cookie('csrftoken'))
+}
 export async function api<T>(path:string, options:RequestInit={}):Promise<T> {
   const method=(options.method??'GET').toUpperCase()
   if (!['GET','HEAD','OPTIONS'].includes(method) && !csrf) await initCsrf()

@@ -9,7 +9,7 @@ PERMISSION_GROUPS = {
 ALL_PERMISSIONS = {p for group in PERMISSION_GROUPS.values() for p in group}
 
 def has_club_permission(user, club, permission):
-    if club is None: return False
+    if club is None or not user.is_authenticated: return False
     if user.is_superuser or user.is_staff:
         return True
     membership = club.memberships.filter(user=user, status="active").first()

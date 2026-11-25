@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Club, ClubMembership, JoinCode, Event, Announcement, Notification, ActivityLog
+from .models import Club, ClubMembership, JoinCode, Event, Announcement, Notification, ActivityLog, UserProfile, ClubMessage
 from .permissions import ALL_PERMISSIONS
 
 User = get_user_model()
@@ -11,6 +11,28 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "name"]
     def get_name(self, obj): return obj.get_full_name() or obj.username
+
+class AdminStudentProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = ["avatar", "created_at"]
+
+class AdminStudentMembershipSerializer(serializers.ModelSerializer):
+    club_name = serializers.CharField(source="club.name", read_only=True)
+    club_abbreviation = serializers.CharField(source="club.abbreviation", read_only=True)
+    class Meta:
+        model = ClubMembership
+        fields = ["club_name", "club_abbreviation", "role_name", "status", "joined_at"]
+
+class AdminStudentDetailSerializer(UserSerializer):
+    date_joined = serializers.DateTimeField(read_only=True)
+    profile = serializers.SerializerMethodField()
+    memberships = AdminStudentMembershipSerializer(source="club_memberships", many=True, read_only=True)
+    class Meta(UserSerializer.Meta):
+        fields = UserSerializer.Meta.fields + ["date_joined", "profile", "memberships"]
+    def get_profile(self, obj):
+        profile = getattr(obj, "profile", None)
+        return AdminStudentProfileSerializer(profile).data if profile else None
 
 class ClubSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
@@ -38,9 +60,17 @@ class AdminClubAccountSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    club = serializers.PrimaryKeyRelatedField(queryset=Club.objects.filter(status="active"), required=False, allow_null=True, default=None)
+    role_name = serializers.CharField(max_length=64, required=False, default="Member")
+    permissions = serializers.ListField(child=serializers.ChoiceField(choices=sorted(ALL_PERMISSIONS)), required=False, default=list)
+
+class AdminAddMembershipSerializer(serializers.Serializer):
     club = serializers.PrimaryKeyRelatedField(queryset=Club.objects.filter(status="active"))
     role_name = serializers.CharField(max_length=64, default="Member")
     permissions = serializers.ListField(child=serializers.ChoiceField(choices=sorted(ALL_PERMISSIONS)), required=False, default=list)
+
+class MembershipRoleSerializer(serializers.Serializer):
+    role_name = serializers.CharField(max_length=64, trim_whitespace=True)
 
 class JoinCodeSerializer(serializers.ModelSerializer):
     club_name = serializers.CharField(source="club.name", read_only=True)
@@ -69,6 +99,26 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         fields = ["id", "club", "club_name", "title", "content", "attachment", "author", "author_name", "status", "published_at", "created_at", "updated_at"]
         read_only_fields = ["club", "author", "published_at", "created_at", "updated_at"]
     def get_author_name(self, obj): return obj.author.get_full_name() if obj.author else "Former member"
+
+class AdminAnnouncementSerializer(AnnouncementSerializer):
+    club = serializers.PrimaryKeyRelatedField(queryset=Club.objects.all())
+    class Meta(AnnouncementSerializer.Meta):
+        read_only_fields = ["author", "published_at", "created_at", "updated_at"]
+
+class ClubMessageSerializer(serializers.ModelSerializer):
+    sender_id = serializers.IntegerField(source="sender.id", read_only=True)
+    sender_name = serializers.SerializerMethodField()
+    class Meta:
+        model = ClubMessage
+        fields = ["id", "club", "sender_id", "sender_name", "content", "created_at"]
+        read_only_fields = fields
+    def get_sender_name(self, obj): return obj.sender.get_full_name() or obj.sender.username
+
+class ClubMessageCreateSerializer(serializers.Serializer):
+    content = serializers.CharField(max_length=2000, trim_whitespace=True)
+    def validate_content(self, value):
+        if not value.strip(): raise serializers.ValidationError("A message cannot be empty.")
+        return value.strip()
 
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:

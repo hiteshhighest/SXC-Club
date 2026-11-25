@@ -1,0 +1,8 @@
+{
+  "name": "sxc-clubs-infra",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@neon/config": "^1.14.7"
+  }
+}

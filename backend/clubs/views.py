@@ -6,8 +6,10 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.http import urlsafe_base64_decode
+from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.csrf import csrf_protect
 from rest_framework import viewsets, status, generics
@@ -17,10 +19,10 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.throttling import AnonRateThrottle
-from .models import Club, ClubMembership, JoinCode, Event, Announcement, Notification, ActivityLog, log_activity
+from .models import Club, ClubMembership, JoinCode, Event, Announcement, Notification, ActivityLog, ClubMessage, log_activity
 from .permissions import has_club_permission, ALL_PERMISSIONS, PERMISSION_GROUPS
-from .serializers import (UserSerializer, ClubSerializer, MembershipSerializer, JoinCodeCreateSerializer,
-    JoinCodeSerializer, EventSerializer, AnnouncementSerializer, NotificationSerializer, ActivitySerializer, AdminClubAccountSerializer)
+from .serializers import (UserSerializer, AdminStudentDetailSerializer, AdminAddMembershipSerializer, MembershipRoleSerializer, ClubSerializer, MembershipSerializer, JoinCodeCreateSerializer,
+    JoinCodeSerializer, EventSerializer, AnnouncementSerializer, AdminAnnouncementSerializer, ClubMessageSerializer, ClubMessageCreateSerializer, NotificationSerializer, ActivitySerializer, AdminClubAccountSerializer)
 
 User = get_user_model()
 
@@ -30,7 +32,7 @@ class LoginThrottle(AnonRateThrottle):
 @ensure_csrf_cookie
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def csrf_token(request): return Response({"detail": "CSRF cookie set"})
+def csrf_token(request): return Response({"csrfToken": get_token(request)})
 
 def _login(request, admin_login=False):
     user = authenticate(request, username=request.data.get("username", ""), password=request.data.get("password", ""))
@@ -103,7 +105,7 @@ def password_reset_confirm(request):
 class ClubViewSet(viewsets.ModelViewSet):
     serializer_class = ClubSerializer
     def get_queryset(self):
-        qs = Club.objects.annotate(member_count=Count("memberships", filter=Q(memberships__status="active")))
+        qs = Club.objects.annotate(member_count=Count("memberships", filter=Q(memberships__status="active"))).order_by("name", "pk")
         if self.request.user.is_staff or self.request.user.is_superuser: return qs
         return qs.filter(status="active")
     def get_permissions(self): return [IsAuthenticated()] if self.action in ["create", "update", "partial_update", "destroy"] else [AllowAny()]
@@ -130,7 +132,9 @@ class ClubViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def dashboard(self, request, pk=None):
         club = self.get_object(); active = club.memberships.filter(status="active")
-        return Response({"club": self.get_serializer(club).data, "my_membership": MembershipSerializer(active.filter(user=request.user).first()).data if active.filter(user=request.user).exists() else None,
+        my_membership=active.filter(user=request.user).first() if request.user.is_authenticated else None
+        return Response({"club": self.get_serializer(club).data, "my_membership": MembershipSerializer(my_membership).data if my_membership else None,
+            "can_chat": bool(request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser or my_membership)),
             "executives": MembershipSerializer(active.exclude(role_name__iexact="Member").select_related("user"), many=True).data,
             "members_count": active.count(), "upcoming_events": EventSerializer(club.events.filter(status="published", starts_at__gte=timezone.now())[:5], many=True).data,
             "announcements": AnnouncementSerializer(club.announcements.filter(status="published").order_by("-published_at")[:5], many=True).data})
@@ -150,9 +154,13 @@ class MembershipViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["patch"])
     def role(self, request, club_pk=None, pk=None):
         membership = self.get_object()
+        if membership.user_id == request.user.id:
+            raise PermissionDenied("You cannot change your own club role.")
         if not has_club_permission(request.user, membership.club, "members.change_role"): raise PermissionDenied()
-        if not request.user.is_staff and not has_club_permission(request.user, membership.club, "executives.permissions") and request.data.get("role_name", "Member").lower() != "member": raise PermissionDenied("Only club administrators can assign executive roles.")
-        membership.role_name = request.data.get("role_name", membership.role_name)[:64]
+        form=MembershipRoleSerializer(data=request.data); form.is_valid(raise_exception=True)
+        role_name=form.validated_data["role_name"]
+        if not request.user.is_staff and not has_club_permission(request.user, membership.club, "executives.permissions") and role_name.lower() != "member": raise PermissionDenied("Only club administrators can assign executive roles.")
+        membership.role_name = role_name
         # Role labels never grant permissions. Permission editing is a separate, constrained admin action.
         membership.save(update_fields=["role_name"])
         log_activity(request.user, "membership.role_changed", "Changed member role", membership.club, {"membership_id": membership.id})
@@ -169,9 +177,11 @@ class MembershipViewSet(viewsets.ReadOnlyModelViewSet):
     def permissions(self, request, club_pk=None, pk=None):
         membership=ClubMembership.objects.filter(pk=pk,club_id=club_pk,status="active").select_related("club","user").first()
         if not membership: return Response({"detail":"Not found."},status=404)
+        if membership.user_id == request.user.id:
+            raise PermissionDenied("You cannot change your own club permissions.")
         if not has_club_permission(request.user,membership.club,"executives.permissions"): raise PermissionDenied()
         requested=request.data.get("permissions",[])
-        if not isinstance(requested,list) or not set(requested).issubset(ALL_PERMISSIONS): raise ValidationError({"permissions":"Choose valid club permissions."})
+        if not isinstance(requested,list) or any(not isinstance(permission,str) for permission in requested) or not set(requested).issubset(ALL_PERMISSIONS): raise ValidationError({"permissions":"Choose valid club permissions."})
         if not (request.user.is_staff or request.user.is_superuser):
             actor=membership.club.memberships.filter(user=request.user,status="active").first()
             if not actor or not set(requested).issubset(set(actor.permissions)): raise PermissionDenied("You cannot grant permissions you do not have.")
@@ -215,6 +225,8 @@ def revoke_join_code(request, pk):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def redeem_join_code(request):
+    if request.user.is_staff or request.user.is_superuser:
+        raise PermissionDenied("Administrator accounts cannot join clubs with student codes.")
     raw = str(request.data.get("code", "")).strip()
     if not raw or len(raw) > 80: raise ValidationError({"code": "Enter a valid join code."})
     with transaction.atomic():
@@ -224,7 +236,7 @@ def redeem_join_code(request):
         if not created: raise ValidationError({"code": "You already have a membership in this club."})
         code.uses += 1; code.save(update_fields=["uses"])
         log_activity(request.user, "membership.joined", f"Joined {code.club.name}", code.club, {"membership_id": membership.id})
-    return Response(MembershipSerializer(membership).data, status=201)
+    return Response({**MembershipSerializer(membership).data, "club_name": code.club.name}, status=201)
 
 def _can(request, club, permission):
     if not has_club_permission(request.user, club, permission): raise PermissionDenied()
@@ -252,17 +264,20 @@ class EventViewSet(ScopedContentMixin, viewsets.ModelViewSet):
         _can(self.request, self.get_club(), perm)
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        if self.action in ("create", "update", "partial_update", "destroy") or request.user.is_authenticated: self.check_perm()
+        if self.action in ("create", "update", "partial_update", "destroy"): self.check_perm()
     def perform_create(self, serializer):
         obj=serializer.save(club=self.get_club(), created_by=self.request.user)
         log_activity(self.request.user,"event.created",f"Created event: {obj.title}",obj.club,{"event_id":obj.id})
     def perform_update(self, serializer):
-        if serializer.validated_data.get("status") == "published": _can(self.request, self.get_club(), "events.publish")
-        if serializer.validated_data.get("status") == "draft": _can(self.request, self.get_club(), "events.unpublish")
         previous_status=serializer.instance.status
+        requested_status=serializer.validated_data.get("status")
+        if requested_status!=previous_status:
+            if requested_status == "published": _can(self.request, self.get_club(), "events.publish")
+            if requested_status == "draft": _can(self.request, self.get_club(), "events.unpublish")
         obj=serializer.save()
         log_activity(self.request.user,"event.updated",f"Updated event: {obj.title}",obj.club,{"event_id":obj.id})
-        if obj.status=="cancelled" or (obj.status=="published" and previous_status!="published") or (obj.status=="published" and previous_status=="published"):
+        should_notify=(obj.status=="cancelled" and previous_status!="cancelled") or obj.status=="published"
+        if should_notify:
             kind="event_cancelled" if obj.status=="cancelled" else ("event_published" if previous_status!="published" else "event_updated")
             message=f"Event cancelled: {obj.title}" if obj.status=="cancelled" else (f"New event: {obj.title}" if previous_status!="published" else f"Event updated: {obj.title}")
             for member in obj.club.memberships.filter(status="active").select_related("user"):
@@ -296,22 +311,27 @@ class AnnouncementViewSet(ScopedContentMixin, viewsets.ModelViewSet):
         return qs
     def initial(self, request, *args, **kwargs):
         super().initial(request,*args,**kwargs)
-        if self.action in ("create","update","partial_update","destroy") or request.user.is_authenticated:
+        if self.action in ("create","update","partial_update","destroy"):
             perm={"list":"announcements.view","retrieve":"announcements.view","create":"announcements.create","update":"announcements.edit","partial_update":"announcements.edit","destroy":"announcements.delete"}.get(self.action,"announcements.edit")
             _can(request,self.get_club(),perm)
     def perform_create(self, serializer):
         obj=serializer.save(club=self.get_club(), author=self.request.user)
         log_activity(self.request.user,"announcement.created",f"Created announcement: {obj.title}",obj.club,{"announcement_id":obj.id})
     def perform_update(self, serializer):
-        if serializer.validated_data.get("status")=="published": _can(self.request,self.get_club(),"announcements.publish")
-        if serializer.validated_data.get("status")=="draft": _can(self.request,self.get_club(),"announcements.unpublish")
-        if serializer.validated_data.get("status")=="archived": _can(self.request,self.get_club(),"announcements.delete")
+        previous_status=self.get_object().status
+        requested_status=serializer.validated_data.get("status")
+        if requested_status!=previous_status:
+            if requested_status=="published": _can(self.request,self.get_club(),"announcements.publish")
+            if requested_status=="draft": _can(self.request,self.get_club(),"announcements.unpublish")
+            if requested_status=="archived": _can(self.request,self.get_club(),"announcements.delete")
         obj=serializer.save()
         log_activity(self.request.user,"announcement.updated",f"Updated announcement: {obj.title}",obj.club,{"announcement_id":obj.id})
-        if obj.status=="published" and not obj.published_at:
+        if obj.status=="published" and previous_status!="published":
             obj.published_at=timezone.now(); obj.save(update_fields=["published_at"])
             for member in obj.club.memberships.filter(status="active").select_related("user"):
                 Notification.objects.create(user=member.user,club=obj.club,kind="announcement",message=f"New announcement: {obj.title}")
+        elif obj.status=="draft" and previous_status!="draft" and obj.published_at:
+            obj.published_at=None; obj.save(update_fields=["published_at"])
     def perform_destroy(self, instance):
         log_activity(self.request.user,"announcement.deleted",f"Deleted announcement: {instance.title}",instance.club,{"announcement_id":instance.id})
         instance.delete()
@@ -322,6 +342,57 @@ class AnnouncementViewSet(ScopedContentMixin, viewsets.ModelViewSet):
         if not already_published:
             for member in obj.club.memberships.filter(status="active").select_related("user"): Notification.objects.create(user=member.user,club=obj.club,kind="announcement",message=f"New announcement: {obj.title}")
         return Response(self.get_serializer(obj).data)
+
+class AdminAnnouncementViewSet(viewsets.ModelViewSet):
+    serializer_class=AdminAnnouncementSerializer
+    permission_classes=[IsAdminUser]
+    queryset=Announcement.objects.select_related("club","author").all()
+    def get_queryset(self):
+        qs=super().get_queryset()
+        status_filter=self.request.query_params.get("status")
+        if status_filter in {"draft","published","archived"}: qs=qs.filter(status=status_filter)
+        return qs
+    def perform_create(self, serializer):
+        status_value=serializer.validated_data.get("status","draft")
+        obj=serializer.save(author=self.request.user,published_at=timezone.now() if status_value=="published" else None)
+        log_activity(self.request.user,"announcement.created",f"Created announcement: {obj.title}",obj.club,{"announcement_id":obj.id})
+        if obj.status=="published": self.notify_members(obj)
+    def perform_update(self, serializer):
+        previous_status=self.get_object().status
+        obj=serializer.save()
+        if obj.status=="published" and previous_status!="published":
+            obj.published_at=timezone.now(); obj.save(update_fields=["published_at"])
+            self.notify_members(obj)
+        elif obj.status=="draft" and previous_status!="draft":
+            obj.published_at=None; obj.save(update_fields=["published_at"])
+        log_activity(self.request.user,"announcement.updated",f"Updated announcement: {obj.title}",obj.club,{"announcement_id":obj.id})
+    def perform_destroy(self, instance):
+        log_activity(self.request.user,"announcement.deleted",f"Deleted announcement: {instance.title}",instance.club,{"announcement_id":instance.id})
+        instance.delete()
+    @staticmethod
+    def notify_members(obj):
+        for member in obj.club.memberships.filter(status="active").select_related("user"):
+            Notification.objects.create(user=member.user,club=obj.club,kind="announcement",message=f"New announcement: {obj.title}")
+
+@api_view(["GET","POST"])
+@permission_classes([IsAuthenticated])
+def club_chat(request, club_pk):
+    club=get_object_or_404(Club,pk=club_pk)
+    if not (request.user.is_staff or request.user.is_superuser or club.memberships.filter(user=request.user,status="active").exists()):
+        raise PermissionDenied("Join this club to access its chat.")
+    if request.method=="GET":
+        after=request.query_params.get("after")
+        qs=ClubMessage.objects.filter(club=club).select_related("sender")
+        if after:
+            try: qs=qs.filter(pk__gt=int(after)).order_by("pk")[:100]
+            except ValueError: raise ValidationError({"after":"Use a valid message ID."})
+            messages=list(qs)
+        else:
+            messages=list(qs.order_by("-pk")[:100])[::-1]
+        return Response(ClubMessageSerializer(messages,many=True).data)
+    form=ClubMessageCreateSerializer(data=request.data); form.is_valid(raise_exception=True)
+    message=ClubMessage.objects.create(club=club,sender=request.user,content=form.validated_data["content"])
+    return Response(ClubMessageSerializer(message).data,status=201)
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationSerializer
@@ -336,9 +407,30 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 class AdminUserViewSet(mixins.ListModelMixin,mixins.RetrieveModelMixin,mixins.DestroyModelMixin,viewsets.GenericViewSet):
     serializer_class=UserSerializer; permission_classes=[IsAdminUser]
     def get_queryset(self):
-        qs=User.objects.filter(is_staff=False,is_superuser=False).order_by("last_name","first_name","username")
+        qs=User.objects.filter(is_staff=False,is_superuser=False).select_related("profile").prefetch_related("club_memberships__club").order_by("last_name","first_name","username")
         q=self.request.query_params.get("search")
         return qs.filter(Q(username__icontains=q)|Q(email__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q)) if q else qs
+    def retrieve(self, request, *args, **kwargs):
+        return Response(AdminStudentDetailSerializer(self.get_object()).data)
+    @action(detail=True, methods=["post"], url_path="add-to-club")
+    def add_to_club(self, request, pk=None):
+        student=self.get_object()
+        form=AdminAddMembershipSerializer(data=request.data); form.is_valid(raise_exception=True)
+        data=form.validated_data; club=data["club"]
+        with transaction.atomic():
+            membership=ClubMembership.objects.select_for_update().filter(user=student,club=club).first()
+            if membership and membership.status == "active":
+                raise ValidationError({"club":"This student is already an active member of that club."})
+            if membership:
+                membership.role_name=data["role_name"].strip() or "Member"
+                membership.permissions=sorted(set(data["permissions"]))
+                membership.status="active"
+                membership.joined_at=timezone.now()
+                membership.save(update_fields=["role_name","permissions","status","joined_at"])
+            else:
+                membership=ClubMembership.objects.create(user=student,club=club,role_name=data["role_name"].strip() or "Member",permissions=sorted(set(data["permissions"])))
+            log_activity(request.user,"membership.added",f"Added {student.username} to {club.name}",club,{"membership_id":membership.id,"user_id":student.id})
+        return Response({**MembershipSerializer(membership).data,"club_name":club.name},status=201)
     def perform_destroy(self, instance):
         from django.db import transaction
         with transaction.atomic():
@@ -392,14 +484,16 @@ def create_user(request):
 def create_club_account(request):
     form=AdminClubAccountSerializer(data=request.data); form.is_valid(raise_exception=True); data=form.validated_data
     username=data["username"].strip(); email=data["email"].strip(); password=data["password"]
-    role_name=data["role_name"].strip(); permissions=data["permissions"]; club=data["club"]
-    if not username or not role_name: raise ValidationError({"detail":"Username and role are required."})
+    role_name=data["role_name"].strip(); permissions=data["permissions"]; club=data.get("club")
+    if not username or (club and not role_name): raise ValidationError({"detail":"Username is required, and a role is required when assigning a club."})
     if User.objects.filter(username__iexact=username).exists(): raise ValidationError({"username":"That username is already in use."})
     if User.objects.filter(email__iexact=email).exists(): raise ValidationError({"email":"That email is already in use."})
     try: validate_password(password)
     except DjangoValidationError as e: raise ValidationError({"password":list(e.messages)})
     with transaction.atomic():
         user=User.objects.create_user(username=username,email=email,password=password,first_name=data["first_name"].strip(),last_name=data["last_name"].strip())
-        membership=ClubMembership.objects.create(club=club,user=user,role_name=role_name[:64],permissions=sorted(set(permissions)))
-        log_activity(request.user,"club_account.created",f"Created {username} account for {club.name}",club,{"membership_id":membership.id,"user_id":user.id})
-    return Response({"user":UserSerializer(user).data,"membership":MembershipSerializer(membership).data},status=201)
+        membership=None
+        if club:
+            membership=ClubMembership.objects.create(club=club,user=user,role_name=role_name[:64],permissions=sorted(set(permissions)))
+        log_activity(request.user,"user.created",f"Created student account {username}",club,{"membership_id":membership.id if membership else None,"user_id":user.id})
+    return Response({"user":UserSerializer(user).data,"membership":MembershipSerializer(membership).data if membership else None},status=201)

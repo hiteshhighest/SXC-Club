@@ -24,7 +24,9 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-For the quickest local start, leave `DATABASE_URL` unset and Django uses `backend/db.sqlite3`. For PostgreSQL, start `docker compose up -d db` from the repository root, then set `DATABASE_URL=postgresql://sxcclubs:local-dev-password@localhost:5432/sxcclubs` in the backend environment. Set `DJANGO_SECRET_KEY` to a private random value before sharing or deploying the app. Do not put backend secrets in frontend variables.
+Local development defaults to SQLite (`DJANGO_DEBUG=true`, `DJANGO_USE_SQLITE=true`) even if a Neon `DATABASE_URL` is available. To develop against PostgreSQL instead, set `DJANGO_USE_SQLITE=false` and configure `DATABASE_URL`. For local PostgreSQL, start `docker compose up -d db` from the repository root and use `postgresql://sxcclubs:local-dev-password@localhost:5432/sxcclubs`. Set `DJANGO_SECRET_KEY` to a private random value before sharing or deploying the app. Do not put backend secrets in frontend variables.
+
+Before deployment, set `DJANGO_DEBUG=false`, `DJANGO_USE_SQLITE=false`, a private `DJANGO_SECRET_KEY` with at least 50 characters, production `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, and SMTP settings. Neon’s root `.env.local` is loaded by Django and ignored by Git. Web requests use Neon’s pooled `DATABASE_URL`; Django migration commands automatically use `DATABASE_URL_UNPOOLED` when available. HTTPS is required in production (`DJANGO_SECURE_SSL_REDIRECT=true`); only enable HSTS with a positive `DJANGO_SECURE_HSTS_SECONDS` after HTTPS is confirmed. Verify configuration with `python manage.py check --deploy`.
 
 ```powershell
 python manage.py migrate
@@ -56,6 +58,8 @@ python manage.py check
 python manage.py test clubs
 ```
 
+The Django test command uses an isolated SQLite test database by default, even when the local `.env.local` contains a production `DATABASE_URL`. To explicitly test against PostgreSQL, set `DJANGO_USE_SQLITE=false` and `DJANGO_TEST_DATABASE_URL` to a dedicated disposable test database; do not point it at production.
+
 ## Authentication and access
 
 Students sign in at `/` and administrators sign in at `/admin`. The API enforces the split: student credentials cannot open the administrator session, and administrator credentials cannot use student sign-in. Accounts are provisioned by an administrator; there is no public sign-up page. Django's password validators and password hashing are enabled. API sessions use HttpOnly cookies, `SameSite=Lax`, and CSRF checks on unsafe requests. Production mode enables secure session and CSRF cookies. Login and API request throttles are configured in Django REST Framework.
@@ -68,24 +72,66 @@ Club memberships hold a role label and a separate list of permission keys. Role 
 
 The backend is the authority for club membership and permissions. The API filters club-scoped queries, checks action permissions, prevents non-admins from granting permissions they do not already hold, and does not let role-label edits change permission keys.
 
+## Production deployment: Render + Vercel
+
+No deployment is triggered by these settings. Deploy the Django API as a Render **Web Service** with the repository root directory set to `backend`.
+
+**Render build command**
+
+```sh
+pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
+```
+
+**Render start command**
+
+```sh
+gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
+```
+
+The Django settings module is `config.settings`. `DATABASE_URL` selects PostgreSQL; `DATABASE_URL_UNPOOLED` is used automatically for migrations when present (recommended with Neon). Without `DATABASE_URL`, local development uses SQLite; production refuses to start if it is missing. WhiteNoise serves collected Django static files from `staticfiles/`.
+
+Set these Render environment variables:
+
+| Variable | Value |
+|---|---|
+| `DJANGO_DEBUG` | `false` |
+| `DJANGO_USE_SQLITE` | `false` (the production `DATABASE_URL` is required) |
+| `DJANGO_SECRET_KEY` | A private random value of at least 50 characters |
+| `DJANGO_ALLOWED_HOSTS` | Optional comma-separated service/custom hostnames; Render's `RENDER_EXTERNAL_HOSTNAME` is also allowed automatically |
+| `DATABASE_URL` | Production PostgreSQL URL (use Neon pooled URL for requests) |
+| `DATABASE_URL_UNPOOLED` | Neon direct URL for build-time migrations; optional for other PostgreSQL providers |
+| `CORS_ALLOWED_ORIGINS` | Exact frontend origin, e.g. `https://your-project.vercel.app` (no path) |
+| `CSRF_TRUSTED_ORIGINS` | Exact HTTPS frontend origin, e.g. `https://your-project.vercel.app` |
+| `FRONTEND_URL` | Frontend origin used to build password-reset links |
+| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `DEFAULT_FROM_EMAIL` | SMTP settings for password-reset email delivery |
+
+Production session and CSRF cookies use `Secure` and `SameSite=None` for the separate Vercel and Render domains. Render's HTTPS proxy is configured, and the CSRF endpoint returns the token to the allowed frontend while session login and Django CSRF validation remain in place. Keep CORS and CSRF origins limited to your frontend domains. Set `DJANGO_SECURE_HSTS_SECONDS` only after confirming HTTPS and any custom domains work.
+
+Uploads use `MEDIA_ROOT` (defaults to `backend/media`) and are served from `/media/`. Render's filesystem is ephemeral by default, so attach a persistent disk to the web service, mount it at `/var/data`, and set `MEDIA_ROOT=/var/data/media` if uploads must survive restarts and deployments. A Render disk is limited to one service instance; for multiple instances, move media to shared object storage. Static files are generated by `collectstatic` and do not need a media disk.
+
+For Vercel, set the project root directory to `frontend`. The included `frontend/vercel.json` sets the install command to `npm ci`, the build command to `npm run build`, and the output directory to `dist` (with SPA route fallback). Set the Vercel production environment variable `VITE_API_URL` to the Render API URL ending in `/api`, such as `https://your-api.onrender.com/api`. Vite embeds this value into the browser build, so it must be an API URL and contain no secrets.
+
+After setting the environment variables, run `python manage.py check --deploy` in the Render service environment. Create the first admin with `python manage.py create_first_admin` from the Render shell after migrations complete.
+
 ## API guide
 
-All routes are under `/api/`. JSON errors use DRF validation responses. List routes use page-number pagination (20 results per page; response has `count`, `next`, `previous`, `results`). Unsafe requests require the session CSRF token in `X-CSRFToken`; fetch `/api/csrf/` first. File endpoints accept multipart form data.
+All routes are under `/api/`. JSON errors use DRF validation responses. Paginated list routes use page-number pagination (20 results per page; response has `count`, `next`, `previous`, `results`). The chat endpoint returns up to 100 recent messages; use the last message ID in `?after=` to fetch newer ones. Unsafe requests require the session CSRF token in `X-CSRFToken`; fetch `/api/csrf/` first. File endpoints accept multipart form data.
 
 | Area | Routes | Access |
 |---|---|---|
 | Session | `POST auth/login/`, `POST auth/admin-login/`, `POST auth/logout/`, `GET auth/student/me/`, `GET auth/admin/me/` | Separate student and staff login; remaining routes require the matching session |
 | Password | `POST auth/password-reset/`, `POST auth/password-reset/confirm/` | Public, throttled; reset response is generic |
 | Dashboard | `GET dashboard/` | Signed-in user; own clubs only |
-| Clubs | `GET clubs/`, `GET clubs/{id}/`, `GET clubs/{id}/dashboard/` | Active club directory; private dashboard requires sign-in |
+| Clubs | `GET clubs/`, `GET clubs/{id}/`, `GET clubs/{id}/dashboard/` | Active club directory; public content is visible to visitors, membership details are user-specific |
 | Club changes | `POST clubs/`, `PATCH clubs/{id}/`, `DELETE clubs/{id}/` | Admins create, archive, restore, or permanently delete clubs; club permission for other edits. Deletion removes memberships, events, announcements, join codes, and notifications |
 | Members | `GET clubs/{id}/members/`, `PATCH clubs/{id}/members/{membership}/role/`, `DELETE clubs/{id}/members/{membership}/remove/` | Membership permissions; supports `search`, `role`, and `page` filters |
 | Join codes | `POST join-codes/create/`, `GET join-codes/`, `POST join-codes/{id}/revoke/`, `POST join-codes/redeem/` | Club-specific permission or admin; redemption requires a signed-in account |
 | Events | `/clubs/{id}/events/` list/create/retrieve/update/delete; detail actions `publish/`, `unpublish/` | Published events are visible publicly; writes and non-published data require club permissions |
 | Announcements | `/clubs/{id}/announcements/` list/create/retrieve/update/delete; detail action `publish/` | Only published announcements appear publicly |
+| Club chat | `GET clubs/{id}/chat/`, `GET clubs/{id}/chat/?after={message_id}`, `POST clubs/{id}/chat/` with `{ "content": "..." }` | Active club members and administrators only; messages are capped at 2,000 characters |
 | Notifications | `GET notifications/`, `POST notifications/{id}/read/`, `POST notifications/read_all/` | Own notifications only |
 | Permissions | `GET permissions/` | Public permission catalog; grants still require club authorization |
-| Administration | `GET admin/stats/`, `GET admin/users/`, `DELETE admin/users/{id}/`, `POST admin/users/create/`, `POST admin/accounts/`, `GET activity/` | Admin only; deleting a student removes memberships and notifications while preserving authored events and announcements |
+| Administration | `GET admin/stats/`, `GET admin/users/`, `GET admin/users/{id}/`, `POST admin/users/{id}/add-to-club/`, `DELETE admin/users/{id}/`, `POST admin/users/create/`, `POST admin/accounts/`, `/admin/announcements/` list/create/retrieve/update/delete, `GET activity/` | Admin only; admins can manage announcements across all clubs and add existing students to a club |
 
 ### Permission keys
 

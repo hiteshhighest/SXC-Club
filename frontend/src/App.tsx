@@ -6,13 +6,13 @@ import { Login } from './components/Login'
 import { Button, Card, Input, PageTitle } from './components/ui'
 import { api, json, type User } from './lib/api'
 import { Dashboard } from './pages/Dashboard'
-import { Clubs } from './pages/Clubs'
 import { ClubDetail } from './pages/ClubDetail'
 import { Events } from './pages/Events'
 import { Announcements } from './pages/Announcements'
 import { Members } from './pages/Members'
 import { Admin } from './pages/Admin'
 import { JoinCodes } from './pages/JoinCodes'
+import { RedeemJoinCode } from './pages/RedeemJoinCode'
 
 function Notifications(){
   const [rows,setRows]=useState<any[]>([])
@@ -40,12 +40,12 @@ export function App(){
   if(!user)return <Login mode={mode} onLogin={u=>{setUser(u);if(mode==='admin')setPage('admin')}}/>
   const go=(key:string)=>setPage(key)
   let content
-  if(page.startsWith('club:'))content=<ClubDetail id={page.split(':')[1]} onBack={()=>go('clubs')}/>
+  if(page.startsWith('club:'))content=<ClubDetail id={page.split(':')[1]} currentUserId={user.id} onBack={()=>go(mode==='admin'?'admin':'overview')}/>
   else switch(page){
     case 'overview':content=<Dashboard onNavigate={go}/>;break
-    case 'clubs':content=<Clubs onNavigate={go}/>;break
+    case 'redeem-code':content=<RedeemJoinCode onNavigate={go}/>;break
     case 'events':content=<Events/>;break
-    case 'announcements':content=<Announcements/>;break
+    case 'announcements':content=<Announcements isAdmin={!!user.is_admin}/>;break
     case 'members':content=<Members/>;break
     case 'admin':content=user.is_admin?<Admin onNavigate={go}/>:<Dashboard onNavigate={go}/>;break
     case 'join-codes':content=user.is_admin?<JoinCodes/>:<Dashboard onNavigate={go}/>;break
